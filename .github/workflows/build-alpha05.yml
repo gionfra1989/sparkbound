@@ -52,6 +52,13 @@ jobs:
               "scripts/Backdrop.gd": [
                   ("var live_w := lerp(s.x * .84, s.x * .25, clamp(erase_amount, 0.0, 1.0))", "var live_w: float = lerpf(s.x * .84, s.x * .25, clampf(erase_amount, 0.0, 1.0))"),
               ],
+              "scripts/Creation.gd": [
+                  ("draw_ellipse(Vector2(0,draw_size.y*.36),Vector2(draw_size.x*.28,draw_size.y*.08),Color(0.08,0.1,0.12,.10))", "_draw_oval(Vector2(0,draw_size.y*.36),Vector2(draw_size.x*.28,draw_size.y*.08),Color(0.08,0.1,0.12,.10))"),
+                  ("func draw_ellipse(center:Vector2,radii:Vector2,color:Color)->void:", "func _draw_oval(center:Vector2,radii:Vector2,color:Color)->void:"),
+              ],
+              "scripts/Game.gd": [
+                  ("        6:\n            if player.global_position.x>1725:\n            if player.global_position.x>1725:\n", "        6:\n            if player.global_position.x>1725:\n"),
+              ],
           }
 
           for rel, reps in replacements.items():
@@ -69,6 +76,103 @@ jobs:
               txt = txt.replace("[rendering]\n", "[rendering]\ntextures/vram_compression/import_etc2_astc=true\n", 1)
           project.write_text(txt)
           PY
+
+      - name: Validate Godot scripts and runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -L --fail --retry 3 -o /tmp/godot.zip https://github.com/godotengine/godot-builds/releases/download/4.7.2-stable/Godot_v4.7.2-stable_linux.x86_64.zip
+          rm -rf /tmp/godot-bin
+          mkdir -p /tmp/godot-bin
+          unzip -q /tmp/godot.zip -d /tmp/godot-bin
+          GODOT="$(find /tmp/godot-bin -maxdepth 2 -type f -name 'Godot_v4.7.2-stable_linux.x86_64' | head -n1)"
+          chmod +x "$GODOT"
+          echo "Godot: $GODOT"
+
+          set +e
+          "$GODOT" --headless --path work/Sparkbound_Godot_Alpha05 --editor --quit 2>&1 | tee /tmp/godot-parse.log
+          PARSE_STATUS=${PIPESTATUS[0]}
+          set -e
+          if grep -E "SCRIPT ERROR:|Parse Error:|Compile Error:|Failed to load script" /tmp/godot-parse.log; then
+            echo "Godot script validation failed."
+            exit 1
+          fi
+          test "$PARSE_STATUS" -eq 0
+
+          cat > work/Sparkbound_Godot_Alpha05/runtime_smoke.gd <<'GDSCRIPT'
+          extends SceneTree
+
+          func _init() -> void:
+              call_deferred("_run")
+
+          func fail(message:String) -> void:
+              push_error("RUNTIME_SMOKE_FAIL: " + message)
+              quit(1)
+
+          func _run() -> void:
+              var packed = load("res://main.tscn")
+              if packed == null:
+                  fail("main.tscn did not load")
+                  return
+              var game = packed.instantiate()
+              root.add_child(game)
+              await process_frame
+              game.age = 7
+              game._begin_game()
+              await process_frame
+              if game.player == null or game.controls == null or game.world == null:
+                  fail("gameplay nodes were not created")
+                  return
+              for i in range(3):
+                  game._advance_dialogue()
+                  await process_frame
+              if game.state != "playing":
+                  fail("intro dialogue did not return to playing state")
+                  return
+
+              var start_x:float = game.player.global_position.x
+              game.controls.move_vector = Vector2.RIGHT
+              for i in range(24):
+                  await physics_frame
+              game.controls.move_vector = Vector2.ZERO
+              if game.player.global_position.x <= start_x + 2.0:
+                  fail("touch movement path did not move player")
+                  return
+
+              var DrawPad = load("res://scripts/DrawPad.gd")
+              var pad = DrawPad.new()
+              root.add_child(pad)
+              pad.setup("sky", "TEST SKY", "TEST", 7, [Color.BLACK])
+              await process_frame
+              for stroke in range(3):
+                  var y:float = pad.canvas.position.y + 60.0 + stroke * 55.0
+                  var start = Vector2(pad.canvas.position.x + 60.0, y)
+                  pad._handle_pointer(start, stroke, true, false, false)
+                  for p in range(1, 9):
+                      var pt = Vector2(start.x + p * 55.0, y + sin(float(p)) * 8.0)
+                      pad._handle_pointer(pt, stroke, false, false, true)
+                  pad._handle_pointer(Vector2(start.x + 9.0 * 55.0, y), stroke, false, true, false)
+              if pad.strokes.size() != 3:
+                  fail("drawing surface did not record strokes")
+                  return
+              var normalized:Dictionary = pad._normalized()
+              if normalized.get("strokes", []).size() != 3:
+                  fail("drawing normalization failed")
+                  return
+              print("RUNTIME_SMOKE_OK movement drawing story-bootstrap")
+              quit(0)
+          GDSCRIPT
+
+          set +e
+          "$GODOT" --headless --path work/Sparkbound_Godot_Alpha05 --script res://runtime_smoke.gd 2>&1 | tee /tmp/runtime-smoke.log
+          RUN_STATUS=${PIPESTATUS[0]}
+          set -e
+          if grep -E "SCRIPT ERROR:|Parse Error:|Compile Error:|RUNTIME_SMOKE_FAIL" /tmp/runtime-smoke.log; then
+            echo "Runtime smoke test failed."
+            exit 1
+          fi
+          grep -q "RUNTIME_SMOKE_OK" /tmp/runtime-smoke.log
+          test "$RUN_STATUS" -eq 0
 
       - name: Set up Java 17
         uses: actions/setup-java@v5

@@ -25,6 +25,51 @@ jobs:
           unzip -q "$ZIP" -d work
           test -f work/Sparkbound_Godot_Alpha05/project.godot
 
+      - name: Patch Godot 4.7 strict typing and Android texture settings
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          base = Path("work/Sparkbound_Godot_Alpha05")
+          replacements = {
+              "scripts/Player.gd": [
+                  ("var shadow_scale := clamp(", "var shadow_scale: float = clampf("),
+                  ("var attack_phase := clamp(", "var attack_phase: float = clampf("),
+                  ("var swing := -0.75 + attack_phase * 1.20 if attack_timer > 0.0 else -0.55", "var swing: float = -0.75 + attack_phase * 1.20 if attack_timer > 0.0 else -0.55"),
+                  ("var angle := facing.angle() + swing", "var angle: float = facing.angle() + swing"),
+              ],
+              "scripts/World.gd": [
+                  ("var q := clamp((p - a).dot(ab) / den, 0.0, 1.0)", "var q: float = clampf((p - a).dot(ab) / den, 0.0, 1.0)"),
+              ],
+              "scripts/DrawPad.gd": [
+                  ("var x := max(m, s.x * .5 - total * .5)", "var x: float = maxf(m, s.x * .5 - total * .5)"),
+                  ("var p := canvas.position + event.position", "var p: Vector2 = canvas.position + event.position"),
+              ],
+              "scripts/TouchUI.gd": [
+                  ("var r:Rect2=button_rects[key];var c:=r.get_center();var rad:=min(r.size.x,r.size.y)*.46", "var r:Rect2=button_rects[key];var c:Vector2=r.get_center();var rad:float=minf(r.size.x,r.size.y)*.46"),
+              ],
+              "scripts/Backdrop.gd": [
+                  ("var live_w := lerp(s.x * .84, s.x * .25, clamp(erase_amount, 0.0, 1.0))", "var live_w: float = lerpf(s.x * .84, s.x * .25, clampf(erase_amount, 0.0, 1.0))"),
+              ],
+          }
+
+          for rel, reps in replacements.items():
+              p = base / rel
+              txt = p.read_text()
+              for old, new in reps:
+                  txt = txt.replace(old, new)
+              p.write_text(txt)
+
+          project = base / "project.godot"
+          txt = project.read_text()
+          if "[debug]" not in txt:
+              txt = txt.replace("[display]\n", "[debug]\ngdscript/warnings/inference_on_variant=1\n\n[display]\n", 1)
+          if "textures/vram_compression/import_etc2_astc=true" not in txt:
+              txt = txt.replace("[rendering]\n", "[rendering]\ntextures/vram_compression/import_etc2_astc=true\n", 1)
+          project.write_text(txt)
+          PY
+
       - name: Set up Java 17
         uses: actions/setup-java@v5
         with:
